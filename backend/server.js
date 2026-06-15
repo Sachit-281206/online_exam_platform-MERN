@@ -6,30 +6,25 @@ const authRoutes = require("./routes/authRoutes");
 const classRoutes = require("./routes/classRoutes");
 const examRoutes = require("./routes/examRoutes");
 
-// Load environment variables
 dotenv.config();
-
-// Connect to database
 connectDB();
 
 const app = express();
 
-// Middleware
-app.use(cors());
+app.use(cors({ origin: process.env.CLIENT_URL || "http://localhost:3000" }));
 app.use(express.json());
+
 app.use("/api/auth", authRoutes);
 app.use("/api/classes", classRoutes);
 app.use("/api/exams", examRoutes);
 
-// Test route
-app.get("/", (req, res) => {
-  res.send("API is running...");
+app.get("/", (req, res) => res.send("API is running..."));
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ message: "Internal server error" });
 });
 
-// Define PORT
 const PORT = process.env.PORT || 5000;
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

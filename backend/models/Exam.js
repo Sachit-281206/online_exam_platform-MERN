@@ -1,21 +1,34 @@
 const mongoose = require("mongoose");
 
-const questionSchema = new mongoose.Schema({
-  questionText: {
-    type: String,
-    required: true,
-  },
-  options: [
-    {
+const questionSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ["mcq", "theory"],
+      default: "mcq",
+      required: true,
+    },
+    questionText: {
       type: String,
       required: true,
     },
-  ],
-  correctAnswer: {
-    type: String,
-    required: true,
+    options: [
+      {
+        type: String,
+      },
+    ],
+    correctAnswer: {
+      type: String,
+      default: "",
+    },
+    maxMarks: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
   },
-});
+  { _id: false }
+);
 
 const examSchema = new mongoose.Schema(
   {

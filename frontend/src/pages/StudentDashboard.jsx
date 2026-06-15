@@ -1,274 +1,283 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import API from "../api";
 import DashboardLayout from "../components/DashboardLayout";
+import StudentClassesPanel from "../components/dashboard/student/StudentClassesPanel";
+import StudentExamRunner from "../components/dashboard/student/StudentExamRunner";
+import StudentExamsPanel from "../components/dashboard/student/StudentExamsPanel";
+import StudentResultsPanel from "../components/dashboard/student/StudentResultsPanel";
+import StudentSubmissionBanner from "../components/dashboard/student/StudentSubmissionBanner";
 
 export default function StudentDashboard() {
-
   const [joinCode, setJoinCode] = useState("");
   const [classes, setClasses] = useState([]);
   const [exams, setExams] = useState([]);
+  const [resultsHistory, setResultsHistory] = useState([]);
   const [selectedExam, setSelectedExam] = useState(null);
   const [answers, setAnswers] = useState({});
-  const [result, setResult] = useState(null);
+  const [recentSubmission, setRecentSubmission] = useState(null);
   const [timeLeft, setTimeLeft] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeClassId, setActiveClassId] = useState(null);
+  const [joinMsg, setJoinMsg] = useState(null);
+  const [activeTab, setActiveTab] = useState("classes");
+  const [submitError, setSubmitError] = useState(null);
+  const submitCalledRef = useRef(false);
+  const selectedExamRef = useRef(null);
+  const answersRef = useRef({});
 
-  // Fetch joined classes
   const fetchClasses = async () => {
     try {
       const res = await API.get("/classes/my-classes");
       setClasses(res.data);
-    } catch (err) {
-      console.log(err);
+    } catch {
+      // Error handled silently - user will see empty class list
+    }
+  };
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchResultsHistory = async () => {
+    setRefreshing(true);
+    try {
+      const res = await API.get("/exams/my-results");
+      setResultsHistory(res.data);
+    } catch {
+      // Error handled silently - user will see empty results list
+    } finally {
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
     fetchClasses();
+    fetchResultsHistory();
   }, []);
 
-  // Timer logic
-useEffect(() => {
+  useEffect(() => {
+    selectedExamRef.current = selectedExam;
+  }, [selectedExam]);
 
-  if (!selectedExam || isSubmitting) return;
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
 
-  const timer = setInterval(() => {
+  const handleSubmitExam = async () => {
+    setIsSubmitting(true);
+    setSubmitError(null);
 
-    setTimeLeft(prev => {
+    try {
+      const exam = selectedExamRef.current;
+      const examId = exam?._id;
 
-      if (prev <= 1) {
-        clearInterval(timer);
-        submitExam();
-        return 0;
+      if (!examId) {
+        setIsSubmitting(false);
+        return;
       }
 
-      return prev - 1;
+      const currentAnswers = answersRef.current;
+      const answersArray = exam.questions.map((_, index) => currentAnswers[index] || "");
 
-    });
-
-  }, 1000);
-
-  return () => clearInterval(timer);
-
-}, [selectedExam]);
-
-  // Join class
-  const handleJoinClass = async () => {
-    try {
-      await API.post("/classes/join", { joinCode });
-      alert("Join request sent");
-      setJoinCode("");
+      const res = await API.post(`/exams/submit/${examId}`, { answers: answersArray });
+      setRecentSubmission({
+        examTitle: exam.title,
+        score: res.data.score,
+        totalMarks: res.data.totalMarks,
+        reviewStatus: res.data.reviewStatus,
+      });
+      setSelectedExam(null);
+      setTimeLeft(0);
+      setExams((currentExams) =>
+        currentExams.map((examItem) =>
+          examItem._id === examId
+            ? {
+                ...examItem,
+                attempted: true,
+                reviewStatus: res.data.reviewStatus,
+                score: res.data.score,
+                totalMarks: res.data.totalMarks,
+              }
+            : examItem
+        )
+      );
+      await fetchResultsHistory();
+      setActiveTab("results");
     } catch (err) {
-      alert(err.response?.data?.message || "Error");
+      const errorMessage = err.response?.data?.message || "Failed to submit exam. Please try again.";
+      setSubmitError(errorMessage);
+      setIsSubmitting(false);
     }
   };
 
-  // Fetch exams of class
+  useEffect(() => {
+    if (!selectedExam || isSubmitting) {
+      return undefined;
+    }
+
+    submitCalledRef.current = false;
+
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          if (!submitCalledRef.current) {
+            submitCalledRef.current = true;
+            handleSubmitExam();
+          }
+          return 0;
+        }
+
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [selectedExam, isSubmitting]);
+
+  const handleJoinClass = async () => {
+    if (!joinCode.trim()) {
+      return;
+    }
+
+    setJoinMsg(null);
+
+    try {
+      await API.post("/classes/join", { joinCode });
+      setJoinMsg({ type: "success", text: "Join request sent. Waiting for teacher approval." });
+      setJoinCode("");
+    } catch (err) {
+      setJoinMsg({ type: "error", text: err.response?.data?.message || "Error sending request" });
+    }
+  };
+
   const fetchExams = async (classId) => {
     try {
       const res = await API.get(`/exams/class/${classId}`);
       setExams(res.data);
-    } catch (err) {
-      console.log(err);
+      setActiveClassId(classId);
+      setRecentSubmission(null);
+      setActiveTab("exams");
+      setSubmitError(null);
+    } catch {
+      // Error handled silently - user will see empty exam list
     }
   };
 
-  // Open exam
   const openExam = async (examId) => {
     try {
+      const checkRes = await API.get(`/exams/check-attempt/${examId}`);
+      if (checkRes.data.alreadyAttempted) {
+        setSubmitError("You have already attempted this exam.");
+        setExams((currentExams) =>
+          currentExams.map((examItem) =>
+            examItem._id === examId ? { ...examItem, attempted: true } : examItem
+          )
+        );
+        return;
+      }
 
       const res = await API.get(`/exams/${examId}`);
-
       setSelectedExam(res.data);
       setAnswers({});
-      setResult(null);
+      setRecentSubmission(null);
+      setIsSubmitting(false);
+      setSubmitError(null);
+      submitCalledRef.current = false;
       setTimeLeft(res.data.duration * 60);
-
     } catch (err) {
-      console.log(err);
+      const errorMessage = err.response?.data?.message || "Could not open exam. Please try again.";
+      setSubmitError(errorMessage);
     }
   };
 
-  // Submit exam
- const submitExam = async () => {
+  const handleAnswerChange = (questionIndex, value) => {
+    setAnswers((current) => ({
+      ...current,
+      [questionIndex]: value,
+    }));
+  };
 
-  if (!selectedExam || isSubmitting) return;
+  const handleTabChange = (tab) => {
+    if (selectedExam) {
+      return;
+    }
 
-  setIsSubmitting(true);
+    if (tab !== "results") {
+      setRecentSubmission(null);
+    }
 
-  try {
+    setActiveTab(tab);
+  };
 
-    const res = await API.post(`/exams/submit/${selectedExam._id}`, {
-      answers,
-    });
+  const timerColor =
+    timeLeft < 60 ? "text-[#a84f45]" : timeLeft < 300 ? "text-[#b07b2c]" : "text-[#2f6668]";
 
-    setResult(res.data);
-
-    setSelectedExam(null);
-    setTimeLeft(0);
-
-  } catch (err) {
-    console.log(err);
-  }
-
-};
+  const attemptedExams = exams.filter((exam) => exam.attempted);
+  const pendingExams = exams.filter((exam) => !exam.attempted);
 
   return (
-    <DashboardLayout>
+    <DashboardLayout activeTab={activeTab} onTabChange={handleTabChange}>
+      <div className="mx-auto max-w-4xl p-8">
+        <h1 className="mb-6 text-2xl font-bold text-[#183247]">Student Dashboard</h1>
 
-      <h2 className="text-2xl font-bold mb-6">Student Dashboard</h2>
+        {recentSubmission && activeTab === "results" && (
+          <StudentSubmissionBanner
+            submission={recentSubmission}
+            onDismiss={() => setRecentSubmission(null)}
+          />
+        )}
 
-      {/* Join Class */}
-      <div className="mb-6">
-        <h3 className="text-lg font-semibold mb-2">Join Class</h3>
+        {selectedExam ? (
+          <StudentExamRunner
+            exam={selectedExam}
+            answers={answers}
+            timeLeft={timeLeft}
+            timerColor={timerColor}
+            submitError={submitError}
+            isSubmitting={isSubmitting}
+            onAnswerChange={handleAnswerChange}
+            onGoBack={() => {
+              setSelectedExam(null);
+              setSubmitError(null);
+              setTimeLeft(0);
+            }}
+            onSubmit={handleSubmitExam}
+          />
+        ) : (
+          <>
+            {activeTab === "classes" && (
+              <StudentClassesPanel
+                joinCode={joinCode}
+                joinMessage={joinMsg}
+                classes={classes}
+                onJoinCodeChange={setJoinCode}
+                onJoinClass={handleJoinClass}
+                onViewExams={fetchExams}
+              />
+            )}
 
-        <input
-          className="border p-2 rounded mr-2"
-          type="text"
-          placeholder="Enter Join Code"
-          value={joinCode}
-          onChange={(e) => setJoinCode(e.target.value)}
-        />
+            {activeTab === "exams" && (
+              <StudentExamsPanel
+                classes={classes}
+                exams={exams}
+                activeClassId={activeClassId}
+                pendingExams={pendingExams}
+                attemptedExams={attemptedExams}
+                submitError={submitError}
+                onSelectClass={fetchExams}
+                onOpenExam={openExam}
+              />
+            )}
 
-        <button
-          className="bg-blue-600 text-white px-4 py-2 rounded"
-          onClick={handleJoinClass}
-        >
-          Join
-        </button>
+            {activeTab === "results" && (
+              <StudentResultsPanel
+                resultsHistory={resultsHistory}
+                onRefresh={fetchResultsHistory}
+                refreshing={refreshing}
+              />
+            )}
+          </>
+        )}
       </div>
-
-      {/* Joined Classes */}
-      <div className="mb-6">
-
-        <h3 className="text-lg font-semibold mb-2">Your Classes</h3>
-
-        {classes.map((cls) => (
-
-          <div
-            key={cls._id}
-            className="bg-white p-4 rounded shadow mb-3"
-          >
-
-            <p className="font-semibold">{cls.className}</p>
-
-            <button
-              className="bg-blue-500 text-white px-3 py-1 rounded mt-2"
-              onClick={() => fetchExams(cls._id)}
-            >
-              View Exams
-            </button>
-
-          </div>
-
-        ))}
-      </div>
-
-      {/* Exams */}
-      <div className="mb-6">
-
-        <h3 className="text-lg font-semibold mb-2">Exams</h3>
-
-        {exams.map((exam) => (
-
-          <div
-            key={exam._id}
-            className="bg-white p-4 rounded shadow mb-3"
-          >
-
-            <p className="font-semibold">{exam.title}</p>
-            <p>Duration: {exam.duration} mins</p>
-
-            <button
-              className="bg-green-600 text-white px-3 py-1 rounded mt-2"
-              onClick={() => openExam(exam._id)}
-            >
-              Attempt
-            </button>
-
-          </div>
-
-        ))}
-      </div>
-
-      {/* Exam Attempt */}
-      {selectedExam && (
-
-        <div className="bg-white p-6 rounded shadow">
-
-          <h2 className="text-xl font-bold mb-4">
-            {selectedExam.title}
-          </h2>
-
-          {/* Timer */}
-          <div className="text-right text-red-600 font-bold mb-4">
-            Time Left: {Math.floor(timeLeft / 60)}:
-            {String(timeLeft % 60).padStart(2, "0")}
-          </div>
-
-          {selectedExam.questions.map((q, index) => (
-
-            <div key={index} className="mb-6 border-b pb-4">
-
-              <p className="font-semibold">
-                {index + 1}. {q.questionText}
-              </p>
-
-              <div className="mt-2 space-y-2">
-
-                {q.options.map((opt, i) => (
-
-                  <label key={i} className="block">
-
-                    <input
-                      type="radio"
-                      name={`question-${index}`}
-                      value={opt}
-                      className="mr-2"
-                      onChange={() =>
-                        setAnswers({ ...answers, [index]: opt })
-                      }
-                    />
-
-                    {opt}
-
-                  </label>
-
-                ))}
-
-              </div>
-
-            </div>
-
-          ))}
-
-          <button
-  className="bg-green-600 text-white px-6 py-2 rounded"
-  disabled={isSubmitting || !selectedExam}
-  onClick={submitExam}
->
-  {isSubmitting ? "Submitting..." : "Submit Exam"}
-</button>
-
-        </div>
-  
-      )}
-
-      {/* Result */}
-      {result && (
-
-        <div className="bg-white p-6 rounded shadow mt-6">
-
-          <h3 className="text-lg font-bold">Result</h3>
-
-          <p>
-            Score: {result.score} / {result.totalQuestions}
-          </p>
-
-        </div>
-
-      )}
-
     </DashboardLayout>
   );
 }

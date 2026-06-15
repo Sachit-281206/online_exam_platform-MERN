@@ -2,6 +2,12 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { protect } = require("../middleware/authMiddleware");
+const {
+  isNonEmptyString,
+  normalizeString,
+  isValidEmail,
+} = require("../utils/validation");
 
 const router = express.Router();
 
@@ -11,7 +17,26 @@ const router = express.Router();
 */
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const name = normalizeString(req.body.name);
+    const email = normalizeString(req.body.email).toLowerCase();
+    const password = req.body.password;
+    const role = normalizeString(req.body.role);
+
+    if (!isNonEmptyString(name)) {
+      return res.status(400).json({ message: "Name is required" });
+    }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: "Valid email is required" });
+    }
+
+    if (typeof password !== "string" || password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    if (!["student", "teacher"].includes(role)) {
+      return res.status(400).json({ message: "Role must be student or teacher" });
+    }
 
     // Check if user already exists
     const userExists = await User.findOne({ email });
@@ -51,7 +76,12 @@ router.post("/register", async (req, res) => {
 */
 router.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeString(req.body.email).toLowerCase();
+    const password = req.body.password;
+
+    if (!isValidEmail(email) || !isNonEmptyString(password)) {
+      return res.status(400).json({ message: "Valid email and password are required" });
+    }
 
     // Check if user exists
     const user = await User.findOne({ email });
@@ -86,8 +116,6 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-const { protect } = require("../middleware/authMiddleware");
-
 router.get("/me", protect, (req, res) => {
   res.json(req.user);
 });

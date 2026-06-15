@@ -2,8 +2,21 @@ const express = require("express");
 const { protect } = require("../middleware/authMiddleware");
 const Class = require("../models/Class");
 const JoinRequest = require("../models/JoinRequest");
+const { isNonEmptyString, normalizeString } = require("../utils/validation");
 
 const router = express.Router();
+
+const generateJoinCode = async () => {
+  let joinCode;
+  let exists = true;
+
+  while (exists) {
+    joinCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    exists = await Class.exists({ joinCode });
+  }
+
+  return joinCode;
+};
 
 /*
    @route   POST /api/classes/create
@@ -15,10 +28,14 @@ router.post("/create", protect, async (req, res) => {
       return res.status(403).json({ message: "Only teachers can create classes" });
     }
 
-    const { className } = req.body;
+    const className = normalizeString(req.body.className);
+
+    if (!isNonEmptyString(className)) {
+      return res.status(400).json({ message: "Class name is required" });
+    }
 
     // Generate simple join code
-    const joinCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const joinCode = await generateJoinCode();
 
     const newClass = await Class.create({
       className,
@@ -42,11 +59,20 @@ router.post("/join", protect, async (req, res) => {
       return res.status(403).json({ message: "Only students can join classes" });
     }
 
-    const { joinCode } = req.body;
+    const joinCode = normalizeString(req.body.joinCode).toUpperCase();
+
+    if (!isNonEmptyString(joinCode)) {
+      return res.status(400).json({ message: "Join code is required" });
+    }
 
     const classData = await Class.findOne({ joinCode });
     if (!classData) {
       return res.status(404).json({ message: "Class not found" });
+    }
+
+    // Check if already a member
+    if (classData.students.includes(req.user._id)) {
+      return res.status(400).json({ message: "You are already enrolled in this class" });
     }
 
     // Check if already requested
@@ -87,7 +113,7 @@ router.get("/requests", protect, async (req, res) => {
     const requests = await JoinRequest.find({
       class: { $in: classIds },
       status: "pending",
-    }).populate("student", "name email");
+    }).populate("student", "name email").populate("class", "className");
 
     res.json(requests);
   } catch (error) {
@@ -105,16 +131,24 @@ router.put("/approve/:id", protect, async (req, res) => {
       return res.status(403).json({ message: "Only teachers can approve" });
     }
 
-    const request = await JoinRequest.findById(req.params.id);
+    const request = await JoinRequest.findById(req.params.id).populate("class");
     if (!request) {
       return res.status(404).json({ message: "Request not found" });
+    }
+
+    if (!request.class || request.class.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not authorized to approve this request" });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({ message: "This request has already been processed" });
     }
 
     request.status = "approved";
     await request.save();
 
     // Add student to class
-    await Class.findByIdAndUpdate(request.class, {
+    await Class.findByIdAndUpdate(request.class._id, {
       $addToSet: { students: request.student },
     });
 
@@ -164,5 +198,36 @@ router.get("/teacher-classes", protect, async (req, res) => {
   }
 });
 
+/*
+   @route   PUT /api/classes/reject/:id
+   @desc    Teacher rejects join request
+*/
+router.put("/reject/:id", protect, async (req, res) => {
+  try {
+    if (req.user.role !== "teacher") {
+      return res.status(403).json({ message: "Only teachers can reject requests" });
+    }
+
+    const request = await JoinRequest.findById(req.params.id).populate("class");
+    if (!request) {
+      return res.status(404).json({ message: "Request not found" });
+    }
+
+    if (!request.class || request.class.teacher.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not authorized to reject this request" });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({ message: "This request has already been processed" });
+    }
+
+    request.status = "rejected";
+    await request.save();
+
+    res.json({ message: "Request rejected" });
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 module.exports = router;
